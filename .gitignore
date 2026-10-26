@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# build output (server/dist — compiled backend, server/public — Vite build of web/)
+dist/
+server/public/
+*.tsbuildinfo
+
+# local configuration and secrets
+.env*
+
+# live database (created on first run, collected data stays local)
+*.db
+*.db-wal
+*.db-shm
+
+# personal notes with local paths
+export_data_from_telegram_command.txt
+
+# logs and OS files
+npm-debug.log*
+.DS_Store
+Thumbs.db

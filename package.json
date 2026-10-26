@@ -1,0 +1,25 @@
+{
+  "name": "btc-liquidation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BTCUSDT perpetual chart with live liquidation bubbles (Binance futures).",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lpcms/btc-liquidation.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "install:all": "npm install --prefix ./server && npm install --prefix ./web",
+    "build:web": "npm run build --prefix ./web",
+    "build:server": "npm run build --prefix ./server",
+    "build": "npm run build:web && npm run build:server",
+    "start": "npm run build && npm run start --prefix ./server",
+    "serve": "npm run start --prefix ./server",
+    "collector": "npm run collector --prefix ./server",
+    "backfill": "npm run backfill --prefix ./server",
+    "import": "npm run import --prefix ./server"
+  }
+}

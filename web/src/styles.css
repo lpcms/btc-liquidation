@@ -1,0 +1,197 @@
+/**
+ * Global styles: dark trading-terminal theme.
+ * The control bar is quiet and monospaced; the chart fills the rest of the
+ * viewport. Segmented buttons indicate the active timeframe and USD filter.
+ */
+
+:root {
+    --bg: #0e1117;
+    --bg-bar: #11151d;
+    --border: rgba(255, 255, 255, 0.1);
+    --text: #d4dae6;
+    --text-dim: #6b7686;
+    --accent: #3b82f6;
+    --long: #ef5350;
+    --short: #26a69a;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    background: var(--bg-bar);
+    border-bottom: 1px solid var(--border);
+}
+
+.brand {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+}
+
+.brand .ticker {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+.brand .sub {
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.group {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.seg {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 11px;
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+}
+
+.seg:last-child {
+    border-right: 0;
+}
+
+.seg:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.seg.active {
+    color: #fff;
+    background: var(--accent);
+}
+
+.seg:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.legend .dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-left: 12px;
+    margin-right: 2px;
+    vertical-align: middle;
+}
+
+.legend .dot.long {
+    background: var(--long);
+}
+
+.legend .dot.short {
+    background: var(--short);
+}
+
+.legend .dot.anomaly {
+    background: #ffc107;
+}
+
+.chart-area {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+}
+
+/**
+ * Floating navigation controls (zoom in/out, jump to latest). Hidden by
+ * default, fade in when the user interacts with the chart.
+ */
+.nav-controls {
+    position: absolute;
+    right: 70px;
+    bottom: 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    pointer-events: none;
+    z-index: 5;
+}
+
+.nav-controls.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.nav-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(17, 21, 29, 0.9);
+    color: var(--text);
+    font: 16px/1 ui-monospace, monospace;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.nav-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * {
+        scroll-behavior: auto;
+    }
+}
