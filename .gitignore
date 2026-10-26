@@ -21,3 +21,6 @@ export_data_from_telegram_command.txt
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# manual database snapshots
+server/backups/

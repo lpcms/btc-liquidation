@@ -13,6 +13,10 @@
  *  - On any close or error the collector reconnects with capped exponential
  *    backoff. A liquidation stream is silent when no liquidations occur, so a
  *    long quiet period is normal and must not be treated as a failure.
+ *  - The stream is a snapshot: for each symbol Binance pushes only the latest
+ *    liquidation within every 1000 ms window. When several liquidations happen
+ *    within one second, the earlier ones are never sent, so the stored live
+ *    data is a sample of the flow, not a complete record.
  */
 
 import WebSocket from 'ws';

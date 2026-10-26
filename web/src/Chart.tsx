@@ -2,9 +2,15 @@
  * Chart component.
  *
  * Creates a Lightweight Charts v5 candlestick chart, attaches the liquidation
- * bubble primitive, loads candles and liquidations for the active timeframe,
- * and subscribes to live liquidations over the websocket. Reacts to timeframe
- * and minimum-USD changes from the controls, and resizes with its container.
+ * bubble primitive, loads candles for the active timeframe and the liquidation
+ * history once, and subscribes to live liquidations over the websocket. Reacts
+ * to timeframe and minimum-USD changes from the controls, and resizes with its
+ * container.
+ *
+ * Network traffic is kept incremental: candles are cached per timeframe and
+ * every later request asks only for bars from the newest cached one onwards;
+ * liquidations are loaded in full once and then polled only from the newest
+ * one received over REST.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -21,7 +27,7 @@ import { LiquidationPrimitive } from './LiquidationPrimitive.js';
 import { fetchCandles, fetchLiquidations, subscribeLiquidations } from './api.js';
 import { formatKyivFull, formatKyivHourMinute, formatKyivDayMonth } from './timeFormat.js';
 import { loadRange, saveRange } from './persist.js';
-import type { Liquidation, Timeframe } from './types.js';
+import type { Candle, Liquidation, Timeframe } from './types.js';
 
 /**
  * Tooltip state: the hovered liquidation and the cursor position to anchor to.
@@ -45,6 +51,26 @@ const BAR_SECONDS: Record<Timeframe, number> = {
 };
 
 /**
+ * Overlap, in milliseconds, when polling liquidations from the newest one
+ * already received. Rows stored slightly out of order are still picked up;
+ * the primitive drops the duplicates the overlap brings back.
+ */
+const LIQ_POLL_OVERLAP_MS = 60_000;
+
+/**
+ * Converts API candles into series bars.
+ */
+function toBars(candles: Candle[]): CandlestickData<Time>[] {
+    return candles.map((c) => ({
+        time: c.time as Time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+    }));
+}
+
+/**
  * Props controlling what the chart displays.
  */
 interface ChartProps {
@@ -61,7 +87,9 @@ export function Chart({ timeframe, minUsd, refreshMs }: ChartProps): JSX.Element
     const chartRef = useRef<IChartApi | null>(null);
     const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const primitiveRef = useRef<LiquidationPrimitive | null>(null);
-    const lastBarTimeRef = useRef<number>(0);
+    const candleCacheRef = useRef<Map<Timeframe, CandlestickData<Time>[]>>(new Map());
+    const lastLiqTimeRef = useRef<number | null>(null);
+    const liqInFlightRef = useRef<boolean>(false);
     const timeframeRef = useRef<Timeframe>(timeframe);
     const rangeSaveTimerRef = useRef<number | null>(null);
     const [tooltip, setTooltip] = useState<TooltipState | null>(null);
@@ -172,66 +200,123 @@ export function Chart({ timeframe, minUsd, refreshMs }: ChartProps): JSX.Element
     }, [timeframe]);
 
     /**
-     * Load candles and historical liquidations whenever the timeframe changes.
-     * Liquidations are loaded unfiltered; the USD filter is applied client-side
-     * by the primitive so changing it does not require a refetch.
+     * Upserts fresh bars into a timeframe's cache and, while that timeframe is
+     * on screen, into the series. Bars older than the newest cached bar are
+     * skipped; update() refreshes the still-forming bar and appends bars that
+     * closed since, in order, with no duplicates or gaps.
      */
-    useEffect(() => {
-        const series = seriesRef.current;
+    const applyBars = (tf: Timeframe, candles: Candle[]): void => {
+        const cache = candleCacheRef.current.get(tf);
+        if (cache === undefined) {
+            return;
+        }
+        const series = timeframeRef.current === tf ? seriesRef.current : null;
+
+        for (const bar of toBars(candles)) {
+            const last = cache.length > 0 ? cache[cache.length - 1] : null;
+            if (last !== null && (bar.time as number) < (last.time as number)) {
+                continue;
+            }
+            if (last !== null && bar.time === last.time) {
+                cache[cache.length - 1] = bar;
+            } else {
+                cache.push(bar);
+            }
+            series?.update(bar);
+        }
+    };
+
+    /**
+     * Restores a timeframe's saved zoom/scroll if present; otherwise fits all
+     * data. Each timeframe keeps its own range.
+     */
+    const restoreRange = (tf: Timeframe): void => {
         const chart = chartRef.current;
-        const primitive = primitiveRef.current;
-        if (series === null || chart === null || primitive === null) {
+        if (chart === null) {
+            return;
+        }
+        const saved = loadRange(tf);
+        if (saved !== null) {
+            chart.timeScale().setVisibleLogicalRange(saved);
+        } else {
+            chart.timeScale().fitContent();
+        }
+    };
+
+    /**
+     * Brings a timeframe's candles up to date. With a cache, only the bars
+     * from the newest cached one onwards are fetched. Without one (first visit,
+     * or an earlier load failed) the full history is fetched, cached and, if
+     * the timeframe is still on screen, shown.
+     */
+    const loadCandles = async (tf: Timeframe): Promise<void> => {
+        const cache = candleCacheRef.current.get(tf);
+        if (cache !== undefined && cache.length > 0) {
+            applyBars(tf, await fetchCandles(tf, cache[cache.length - 1].time as number));
             return;
         }
 
-        let cancelled = false;
+        const bars = toBars(await fetchCandles(tf));
+        candleCacheRef.current.set(tf, bars);
+        if (timeframeRef.current === tf) {
+            seriesRef.current?.setData(bars);
+            restoreRange(tf);
+        }
+    };
+
+    /**
+     * Fetches liquidations: the whole history on the first call, afterwards
+     * only those from the newest one received over REST (minus a small
+     * overlap). Websocket events are not used as the starting point, so
+     * anything missed while the socket was down is still caught up here.
+     * Overlapping calls are skipped.
+     */
+    const refreshLiquidations = async (): Promise<void> => {
+        if (liqInFlightRef.current) {
+            return;
+        }
+        liqInFlightRef.current = true;
+        try {
+            const last = lastLiqTimeRef.current;
+            const liquidations = await fetchLiquidations(last === null ? undefined : last - LIQ_POLL_OVERLAP_MS);
+            if (liquidations.length > 0) {
+                lastLiqTimeRef.current = Math.max(last ?? 0, liquidations[liquidations.length - 1].time);
+            }
+            primitiveRef.current?.addLiquidations(liquidations);
+        } finally {
+            liqInFlightRef.current = false;
+        }
+    };
+
+    /**
+     * Show candles whenever the timeframe changes. A timeframe seen before is
+     * drawn from the cache at once and topped up with the new bars only; a new
+     * one is loaded in full. Liquidations do not depend on the timeframe and
+     * are not reloaded; the USD filter is applied client-side by the primitive.
+     */
+    useEffect(() => {
+        const series = seriesRef.current;
+        const primitive = primitiveRef.current;
+        if (series === null || primitive === null) {
+            return;
+        }
 
         /**
          * Align liquidation snapping to the active timeframe before loading.
          */
         primitive.setBarSeconds(BAR_SECONDS[timeframe]);
 
-        const load = async (): Promise<void> => {
-            const candles = await fetchCandles(timeframe);
-            if (cancelled) {
-                return;
-            }
-            const data: CandlestickData<Time>[] = candles.map((c) => ({
-                time: c.time as Time,
-                open: c.open,
-                high: c.high,
-                low: c.low,
-                close: c.close,
-            }));
-            series.setData(data);
+        const cached = candleCacheRef.current.get(timeframe);
+        if (cached !== undefined && cached.length > 0) {
+            series.setData(cached);
+            restoreRange(timeframe);
+        }
+
+        void loadCandles(timeframe).catch(() => {
             /**
-             * Track the newest bar time so polling knows which bars to apply.
+             * A failed load is retried by the next poll.
              */
-            lastBarTimeRef.current = data.length > 0 ? (data[data.length - 1].time as number) : 0;
-
-            /**
-             * Restore this timeframe's saved zoom/scroll if present; otherwise
-             * fit all data. Each timeframe keeps its own range.
-             */
-            const saved = loadRange(timeframe);
-            if (saved !== null) {
-                chart.timeScale().setVisibleLogicalRange(saved);
-            } else {
-                chart.timeScale().fitContent();
-            }
-
-            const liquidations = await fetchLiquidations();
-            if (cancelled) {
-                return;
-            }
-            primitive.setLiquidations(liquidations);
-        };
-
-        void load();
-
-        return () => {
-            cancelled = true;
-        };
+        });
     }, [timeframe]);
 
     /**
@@ -242,78 +327,34 @@ export function Chart({ timeframe, minUsd, refreshMs }: ChartProps): JSX.Element
     }, [minUsd]);
 
     /**
-     * Poll for fresh data on the selected refresh interval. Each tick updates
-     * candles (the forming bar grows and newly closed bars appear) and reloads
-     * liquidations so new bubbles are drawn together with the candle update.
-     * Re-created when the timeframe or interval changes.
+     * Poll for fresh data on the selected refresh interval. Each tick fetches
+     * only what is new: the forming bar and bars closed since the last tick,
+     * and liquidations stored since the last REST response. Re-created when
+     * the timeframe or interval changes.
      */
     useEffect(() => {
-        const series = seriesRef.current;
-        const primitive = primitiveRef.current;
-        if (series === null || primitive === null) {
-            return;
-        }
-
-        let stopped = false;
-
-        const poll = async (): Promise<void> => {
-            try {
-                const candles = await fetchCandles(timeframe);
-                if (stopped || candles.length === 0) {
-                    return;
-                }
-                /**
-                 * Apply every bar at or after the last known bar time. update()
-                 * upserts by time: it refreshes the still-forming bar and appends
-                 * bars that have closed since the previous poll, in order, with no
-                 * duplicates or gaps.
-                 */
-                const lastKnown = lastBarTimeRef.current;
-                for (const c of candles) {
-                    if (c.time >= lastKnown) {
-                        series.update({
-                            time: c.time as Time,
-                            open: c.open,
-                            high: c.high,
-                            low: c.low,
-                            close: c.close,
-                        });
-                    }
-                }
-                lastBarTimeRef.current = candles[candles.length - 1].time;
-
-                /**
-                 * Refresh liquidations so newly collected ones appear as bubbles
-                 * at the same time as the candle update.
-                 */
-                const liquidations = await fetchLiquidations();
-                if (!stopped) {
-                    primitive.setLiquidations(liquidations);
-                }
-            } catch {
-                /**
-                 * Ignore a failed poll; the next tick retries.
-                 */
-            }
-        };
-
         const timer = window.setInterval(() => {
-            void poll();
+            /**
+             * A failed poll is ignored; the next tick retries.
+             */
+            void loadCandles(timeframe).catch(() => undefined);
+            void refreshLiquidations().catch(() => undefined);
         }, refreshMs);
 
         return () => {
-            stopped = true;
             window.clearInterval(timer);
         };
     }, [timeframe, refreshMs]);
 
     /**
-     * Subscribe to live liquidations once on mount. New events are appended to
-     * the primitive, which redraws them with the active filter.
+     * Load the liquidation history and subscribe to live liquidations once on
+     * mount. Both feed the primitive, which merges them without duplicates and
+     * redraws them with the active filter.
      */
     useEffect(() => {
+        void refreshLiquidations().catch(() => undefined);
         const dispose = subscribeLiquidations((liq) => {
-            primitiveRef.current?.addLiquidation(liq);
+            primitiveRef.current?.addLiquidations([liq]);
         });
         return dispose;
     }, []);

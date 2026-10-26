@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🫧 BTC Liquidation Map — Binance Futures
+# <img src="docs/logo.png" alt="" width="36" height="36" align="top"> BTC Liquidation Map — Binance Futures
 
 **See where the market forced traders out.**
 A real-time BTCUSDT perpetual chart with every liquidation drawn as a bubble at its exact price
@@ -30,6 +30,7 @@ and time, sized by its value in USDT.
 - [🎛️ Using the Chart](#️-using-the-chart)
 - [🔌 API](#-api)
 - [🗄️ Database](#️-database)
+- [📦 History Archive (Seed)](#-history-archive-seed)
 - [📥 Importing History from Telegram](#-importing-history-from-telegram)
 - [📜 Scripts](#-scripts)
 - [🗂️ Project Structure](#️-project-structure)
@@ -53,6 +54,7 @@ and time, sized by its value in USDT.
 | 💬 **Tooltips**             | Hover a bubble: side, size in USD, price, date and time                                  |
 | ⚡ **Real time**            | New liquidations are pushed over a WebSocket and appear the moment they happen           |
 | 🔄 **Live candles**         | The forming bar grows; refresh interval 1m · 3m · 5m · 1h                                |
+| 🪶 **Light traffic**        | Each refresh downloads only what is new — a few hundred bytes instead of megabytes       |
 | 🧭 **Navigation**           | Zoom in / out and "jump to latest" buttons appear when you touch the chart               |
 | 💾 **Remembers you**        | Timeframe, filter, refresh interval and the zoom of **each** timeframe survive a reload  |
 | 🕐 **Kyiv time**            | Axis, crosshair and tooltips in Europe/Kyiv, daylight saving handled by `Intl`           |
@@ -66,7 +68,10 @@ and time, sized by its value in USDT.
   every later start fetches only the missing bars; a 60-second loop keeps the current bar fresh.
 - 🗄️ **SQLite store** — WAL mode, prepared statements, idempotent inserts: re-runs and overlapping
   imports never create duplicates.
+- 📦 **History archive** — 53 845 BTC liquidations since January 2023 ship with the repository
+  as a 1 MB compressed seed, loaded on demand.
 - 📥 **History import** — years of past BTC liquidations from a Telegram channel export.
+- 🗜️ **Compressed API** — gzip / brotli on every HTTP response (about 4–5× smaller).
 - 🧩 **One port** — REST API, WebSocket and the built frontend are served by one Node process.
 
 ---
@@ -125,6 +130,27 @@ and time, sized by its value in USDT.
 |  5   | Radius = `3 px + √(usd / $5M) × 25 px` (capped at 28 px) — area grows linearly with value        |
 |  6   | Drawn on the chart canvas above the candles at 50 % opacity, so price action stays visible       |
 
+**What the browser downloads** — everything after the first load is incremental:
+
+| Moment                          | Candles                                         | Liquidations                                   |
+| ------------------------------- | ----------------------------------------------- | ---------------------------------------------- |
+| Page opens                      | Full history of the active timeframe            | Full history, **once** for all timeframes      |
+| Refresh tick (1m … 1h)          | Only bars from the newest cached one (~350 B)   | Only rows since the newest received (~350 B)   |
+| Switch to a timeframe seen before | Drawn from the in-memory cache + new bars only | Nothing — already in memory                    |
+| Switch to a new timeframe       | Full history of that timeframe                  | Nothing                                        |
+| A liquidation happens           | —                                               | Pushed over `/ws` instantly                    |
+
+On every frame the bubble layer binary-searches the visible time window and draws only the
+liquidations inside it, so panning stays smooth however much history is loaded.
+
+> ⚠️ **Live Binance data is a sample, not every liquidation.** Binance's liquidation stream is a
+> snapshot: for each symbol it pushes **only the latest liquidation within every 1000 ms**
+> ([official docs](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Liquidation-Order-Streams)).
+> When five liquidations happen within one second, Binance sends one and the other four never
+> leave the exchange — no client can recover them. The collector stores every message it receives;
+> the chart marks this with **ⓘ 1/s sample** (hover it for the explanation) in the legend. Read bubbles as a picture of
+> where the pressure was, not as exact totals.
+
 ---
 
 ## 🧰 Tech Stack
@@ -133,14 +159,14 @@ and time, sized by its value in USDT.
 | --------- | ---------------------------------------------------------------------------------------- |
 | Runtime   | **Node.js 18+** (tested on 22 and 24), ES modules                                         |
 | Language  | **TypeScript 5** — `strict` on both sides                                                 |
-| Server    | **Express 4** (REST + static files), **ws 8** (Binance stream client and browser hub)     |
+| Server    | **Express 4** (REST + static files), **compression** (gzip / brotli), **ws 8** (Binance stream client and browser hub) |
 | Database  | **SQLite** via **better-sqlite3 11** — WAL journal, prepared statements                   |
 | Frontend  | **React 18**, **Vite 6**, hand-written CSS (dark trading-terminal theme)                  |
 | Charting  | **TradingView Lightweight Charts 5** + a custom `ISeriesPrimitive` for the bubbles        |
 | Data      | Binance USDⓈ-M Futures public market data — **no API key needed**                         |
 
-> Three runtime dependencies on the server (`express`, `ws`, `better-sqlite3`) and three in the
-> browser (`react`, `react-dom`, `lightweight-charts`).
+> Four runtime dependencies on the server (`express`, `compression`, `ws`, `better-sqlite3`) and
+> three in the browser (`react`, `react-dom`, `lightweight-charts`).
 
 ---
 
@@ -165,7 +191,16 @@ Open **http://127.0.0.1:3000**
 
 The first start backfills about 35 000 candles from Binance — usually under a minute. Candles
 appear immediately; liquidation bubbles accumulate as live events arrive and are kept in the
-database between runs. To see years of history at once, [import it from Telegram](#-importing-history-from-telegram).
+database between runs.
+
+**Want the history too?** Load the bundled archive of 53 845 liquidations (January 2023 – today)
+— it takes about a second:
+
+```bash
+npm run seed:import
+```
+
+See [History Archive](#-history-archive-seed) for when to load it and how to clear it again.
 
 **Every next run**, if the code has not changed:
 
@@ -266,8 +301,10 @@ CREATE TABLE candles (
 
 | File                                | In git | Purpose                                                    |
 | ----------------------------------- | :----: | ---------------------------------------------------------- |
+| `server/data/liquidations.csv.gz`   |   ✅   | History archive (seed) — see below                         |
 | `server/btc-liq.db`                 |   ❌   | The live database of an installation                       |
 | `server/btc-liq.db-wal`, `-shm`     |   ❌   | SQLite WAL journal files — keep them next to the database  |
+| `server/backups/`                   |   ❌   | Your manual database snapshots                             |
 
 - Liquidations use `INSERT OR IGNORE` on the composite key — live events, re-imports and overlaps
   are deduplicated.
@@ -276,7 +313,40 @@ CREATE TABLE candles (
   the cache keeps growing.
 
 > 💾 **Back up** by copying `btc-liq.db` while the server is stopped, or use
-> `sqlite3 btc-liq.db ".backup backup.db"` while it runs.
+> `sqlite3 btc-liq.db ".backup backups/backup.db"` while it runs.
+
+---
+
+## 📦 History Archive (Seed)
+
+The repository ships the collected history as **`server/data/liquidations.csv.gz`** — a gzip CSV of
+**53 845 BTC liquidations, 02.01.2023 – 26.10.2026** (Telegram import + live Binance data),
+**1.0 MB** instead of 11.7 MB as a database. It contains only public market data.
+
+```text
+time,side,price,qty,usd
+1672621594000,LONG,16554.4,10.027545546803266,166000      ← first row, 02.01.2023 (Telegram)
+…
+1793031369152,LONG,80167.6,0.085,6814.246000000001        ← last row, 26.10.2026 (live Binance)
+```
+
+| Command               | What it does                                                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `npm run seed:import` | Loads the archive into your database. Rows you already have are skipped — safe to repeat        |
+| `npm run seed:export` | **Merges** your database into the archive (new rows only). It never removes rows from it        |
+
+- **Not loaded automatically.** Years of events make the chart heavier, so a fresh install starts
+  with live data only; load the history when you want it.
+- **Exact values.** Numbers are stored in their shortest round-trip form, so an imported row is
+  bit-identical to the exported one and deduplication by primary key keeps working.
+- **Keep the local chart light, keep the history.** Because export only merges, you can export,
+  then delete old rows locally — the archive keeps them:
+
+```bash
+npm run seed:export      # make sure the archive has everything
+# then stop the server and delete what you no longer want on the chart, e.g. everything before 2026:
+sqlite3 server/btc-liq.db "DELETE FROM liquidations WHERE time < 1767225600000; VACUUM;"
+```
 
 ---
 
@@ -312,8 +382,9 @@ node server/dist/import-telegram.js "C:\path\to\result.json"
 | Safe to re-run       | Idempotent inserts — run it alongside the live collector, repeat with newer exports      |
 
 > The channel posts only sizeable liquidations, so imported history is sparser than the live
-> stream and consists of larger events. The mockup above shows June 2026 from such an import
-> (53 000+ events since January 2023 in the author's database).
+> stream and consists of larger events. The mockup above shows June 2026 from such an import;
+> the result is already in the [History Archive](#-history-archive-seed), so you don't need to
+> repeat it unless you want newer messages.
 
 ---
 
@@ -330,6 +401,8 @@ From the project root:
 | `npm run collector`      | Diagnostics: print every live liquidation as it arrives (no web server)            |
 | `npm run backfill`       | Diagnostics: one-off candle update with a per-timeframe coverage summary           |
 | `npm run import -- <file>` | Import a Telegram `result.json` (see above)                                      |
+| `npm run seed:import`    | Load the history archive into the database                                         |
+| `npm run seed:export`    | Merge the database into the history archive                                        |
 
 Inside `server/`: `npm run dev` — `tsc --watch`.
 Inside `web/`: `npm run dev` — Vite dev server, `npm run preview` — preview the production build.
@@ -341,14 +414,19 @@ Inside `web/`: `npm run dev` — Vite dev server, `npm run preview` — preview 
 ```text
 btc-liquidation/
 ├── docs/
+│   ├── logo.png                   # README logo (the favicon as PNG)
 │   └── mokup.jpg                  # README mockup (desktop + mobile)
 ├── server/                        # Node + TypeScript backend
+│   ├── data/
+│   │   └── liquidations.csv.gz    # history archive: 53 845 liquidations, 1.0 MB
 │   ├── src/
 │   │   ├── index.ts               # production entry: backfill → collector → API/WS/static on :3000
 │   │   ├── collector.ts           # Binance @forceOrder WebSocket client, normalization, reconnect
 │   │   ├── candles.ts             # klines backfill / incremental update, 60 s refresh loop
 │   │   ├── db.ts                  # SQLite schema and the Repository (prepared statements)
-│   │   ├── dbpath.ts              # resolves server/btc-liq.db independently of the cwd
+│   │   ├── dbpath.ts              # resolves the database and the seed independently of the cwd
+│   │   ├── seed.ts                # archive export (merge) / import, exact round-trip CSV
+│   │   ├── seed-runner.ts         # CLI: seed export | import
 │   │   ├── api.ts                 # REST routes /api/timeframes, /api/candles, /api/liquidations
 │   │   ├── hub.ts                 # browser WebSocket hub on /ws, broadcast of new liquidations
 │   │   ├── timeframes.ts          # timeframes, bar lengths, backfill depth
@@ -364,8 +442,8 @@ btc-liquidation/
 │   ├── src/
 │   │   ├── main.tsx               # React entry
 │   │   ├── App.tsx                # toolbar: timeframe, size filter, refresh interval, legend
-│   │   ├── Chart.tsx              # chart setup, data loading, polling, live socket, nav buttons, tooltip
-│   │   ├── LiquidationPrimitive.ts# canvas renderer of the bubbles + hit-testing
+│   │   ├── Chart.tsx              # chart, per-timeframe candle cache, incremental polling, live socket, tooltip
+│   │   ├── LiquidationPrimitive.ts# sorted de-duplicated store, visible-window canvas renderer, hit-testing
 │   │   ├── api.ts                 # REST client and auto-reconnecting WebSocket subscription
 │   │   ├── persist.ts             # localStorage: settings and per-timeframe visible range
 │   │   ├── timeFormat.ts          # Europe/Kyiv formatting for axis, crosshair and tooltip
@@ -381,7 +459,7 @@ btc-liquidation/
 ```
 
 Generated and git-ignored: `server/dist/` (compiled backend), `server/public/` (built frontend),
-`server/btc-liq.db*` (data), `node_modules/`.
+`server/btc-liq.db*` (live data), `server/backups/`, `node_modules/`.
 
 ---
 
@@ -451,8 +529,8 @@ An honest list — good candidates for the next iteration:
 
 | Area                    | Finding                                                                                                        | Suggested fix                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| 📡 Live sampling        | Binance pushes at most **one liquidation per symbol per second** on `@forceOrder` — bursts are sampled, not complete | Treat bubbles as a picture of pressure, not an exact sum            |
-| 📦 Payload size         | Each poll re-reads **all** candles of the timeframe and **all** liquidations (~5 MB + ~5 MB with 50k events)   | Request only `from` the last bar / last event; fetch per visible range |
+| 📡 Live sampling        | Binance pushes at most **one liquidation per symbol per second** — bursts are sampled, not complete ([details](#️-how-it-works)) | A second exchange with a complete stream (e.g. Bybit `allLiquidation`) |
+| 📦 First load           | Opening the page still downloads the full candle history of the timeframe and all stored liquidations (≈1 MB each, compressed) | Load the visible range first, older data on scroll                  |
 | 🔧 Hard-coded settings  | Port, host and symbol are constants                                                                            | Read `PORT` / `HOST` / `SYMBOL` from the environment                |
 | 💬 Tooltip at the edge  | Near the right edge the tooltip overlaps the price scale                                                       | Flip it to the left of the cursor when it would overflow            |
 | 🗄️ No retention policy  | Candles and liquidations grow forever                                                                          | Optional pruning by age per timeframe                               |
@@ -469,6 +547,6 @@ financial advice.
 
 <div align="center">
 
-Made with ❤️ by **LPcms.net** · Ukraine 🇺🇦
+Made with ❤️ by **LPCMS** · Ukraine 🇺🇦
 
 </div>

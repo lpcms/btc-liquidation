@@ -111,6 +111,21 @@ export class Repository {
     }
 
     /**
+     * Inserts a batch of liquidations inside a single transaction, ignoring
+     * duplicates like insertLiquidation. Returns the number of new rows.
+     */
+    insertLiquidations(liquidations: Liquidation[]): number {
+        const run = this.db.transaction((rows: Liquidation[]) => {
+            let added = 0;
+            for (const liq of rows) {
+                added += this.insertLiquidationStmt.run(liq).changes;
+            }
+            return added;
+        });
+        return run(liquidations);
+    }
+
+    /**
      * Returns liquidations within a time range whose USD notional meets or
      * exceeds the given minimum. Times are in milliseconds.
      */

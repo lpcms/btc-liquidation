@@ -20,6 +20,8 @@
     "serve": "npm run start --prefix ./server",
     "collector": "npm run collector --prefix ./server",
     "backfill": "npm run backfill --prefix ./server",
-    "import": "npm run import --prefix ./server"
+    "import": "npm run import --prefix ./server",
+    "seed:export": "npm run seed:export --prefix ./server",
+    "seed:import": "npm run seed:import --prefix ./server"
   }
 }

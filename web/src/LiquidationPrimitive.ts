@@ -9,9 +9,10 @@
  *    proportional to value, the convention used by liquidation heatmaps
  *  - color encodes side: long liquidations and short liquidations differ
  *
- * The primitive holds the full liquidation set and a USD filter threshold.
- * Drawing is clipped to the pane and skips bubbles whose coordinates are off
- * screen or unresolved.
+ * The primitive holds the full liquidation set, sorted by time and
+ * de-duplicated, and a USD filter threshold. Each draw binary-searches the
+ * visible time range and only visits liquidations inside it, so the cost of a
+ * frame depends on what is on screen, not on the size of the history.
  */
 
 import type {
@@ -124,12 +125,17 @@ class BubbleRenderer implements IPrimitivePaneRenderer {
         }
 
         const timeScale = chart.timeScale();
+        const visible = timeScale.getVisibleRange();
         const placed: PlacedBubble[] = [];
+        if (visible === null) {
+            this.source.setPlaced(placed);
+            return;
+        }
 
         target.useMediaCoordinateSpace((scope) => {
             const ctx = scope.context;
 
-            for (const liq of this.source.getFiltered()) {
+            for (const liq of this.source.visibleLiquidations(visible.from as number, visible.to as number)) {
                 const barTime = this.source.snapToBar(liq.time);
                 const x = timeScale.timeToCoordinate(barTime as Time);
                 const y = series.priceToCoordinate(liq.price);
@@ -204,6 +210,7 @@ export class LiquidationPrimitive implements ISeriesPrimitive<Time> {
     series: ISeriesApi<SeriesType> | null = null;
 
     private liquidations: Liquidation[] = [];
+    private readonly keys = new Set<string>();
     private minUsd = 0;
     private barSeconds = 3600;
     private placed: PlacedBubble[] = [];
@@ -248,20 +255,34 @@ export class LiquidationPrimitive implements ISeriesPrimitive<Time> {
     }
 
     /**
-     * Replaces the full liquidation set and triggers a redraw.
+     * Merges liquidations into the set, skipping ones already present (the
+     * initial load, incremental polls and websocket events overlap), keeping
+     * the array sorted by time. Redraws only when something was added.
      */
-    setLiquidations(liquidations: Liquidation[]): void {
-        this.liquidations = liquidations;
-        this.requestUpdate?.();
-    }
+    addLiquidations(liquidations: Liquidation[]): void {
+        let added = false;
+        for (const liq of liquidations) {
+            const key = `${liq.time}|${liq.side}|${liq.price}|${liq.qty}`;
+            if (this.keys.has(key)) {
+                continue;
+            }
+            this.keys.add(key);
+            added = true;
 
-    /**
-     * Appends a single liquidation, keeping the array sorted by time, and
-     * triggers a redraw. Used for live websocket events.
-     */
-    addLiquidation(liq: Liquidation): void {
-        this.liquidations.push(liq);
-        this.requestUpdate?.();
+            /**
+             * Events almost always arrive in time order, so appending is the
+             * common case; an older one is inserted at its sorted position.
+             */
+            const list = this.liquidations;
+            if (list.length === 0 || list[list.length - 1].time <= liq.time) {
+                list.push(liq);
+            } else {
+                list.splice(this.lowerBound(liq.time), 0, liq);
+            }
+        }
+        if (added) {
+            this.requestUpdate?.();
+        }
     }
 
     /**
@@ -295,13 +316,38 @@ export class LiquidationPrimitive implements ISeriesPrimitive<Time> {
     }
 
     /**
-     * Returns the liquidations passing the current USD filter.
+     * Returns the index of the first liquidation whose time is >= timeMs.
      */
-    getFiltered(): Liquidation[] {
-        if (this.minUsd <= 0) {
-            return this.liquidations;
+    private lowerBound(timeMs: number): number {
+        let lo = 0;
+        let hi = this.liquidations.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (this.liquidations[mid].time < timeMs) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
         }
-        return this.liquidations.filter((l) => l.usd >= this.minUsd);
+        return lo;
+    }
+
+    /**
+     * Yields the liquidations passing the USD filter whose bar lies within the
+     * visible range [fromSec, toSec] of bar open times. A liquidation belongs
+     * to the bar it falls in, so the last bar covers up to toSec + barSeconds.
+     */
+    *visibleLiquidations(fromSec: number, toSec: number): Generator<Liquidation> {
+        const endMs = (toSec + this.barSeconds) * 1000;
+        for (let i = this.lowerBound(fromSec * 1000); i < this.liquidations.length; i++) {
+            const liq = this.liquidations[i];
+            if (liq.time >= endMs) {
+                break;
+            }
+            if (liq.usd >= this.minUsd) {
+                yield liq;
+            }
+        }
     }
 
     /**

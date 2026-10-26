@@ -2,18 +2,20 @@
  * Unified production entrypoint.
  *
  * Startup sequence:
- *   1. Open the database.
+ *   1. Open the database. The committed liquidation history is not loaded
+ *      automatically (it makes the chart heavy); see the seed CLI.
  *   2. Incrementally update candles (fast delta fetch on each boot).
  *   3. Start the liquidation collector, pushing each new liquidation to both
  *      the database (via the collector) and connected clients (via the hub).
- *   4. Serve the REST API, the client websocket, and the built frontend on a
- *      single port bound to localhost.
+ *   4. Serve the gzip-compressed REST API, the client websocket, and the built
+ *      frontend on a single port bound to localhost.
  *
  * Run on the VPS with: npm run build && node dist/index.js
  * Intended to run under pm2 for restart-on-crash and boot persistence.
  */
 
 import express from 'express';
+import compression from 'compression';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -63,6 +65,12 @@ async function main(): Promise<void> {
     }
 
     const app = express();
+
+    /**
+     * Gzip every HTTP response. Candle and liquidation JSON is highly
+     * repetitive and shrinks several times over; the websocket is unaffected.
+     */
+    app.use(compression());
     app.use('/api', createApiRouter(repo));
 
     /**

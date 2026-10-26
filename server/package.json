@@ -9,15 +9,19 @@
     "collector": "node dist/collector-runner.js",
     "backfill": "node dist/candles-runner.js",
     "import": "node dist/import-telegram.js",
+    "seed:export": "node dist/seed-runner.js export",
+    "seed:import": "node dist/seed-runner.js import",
     "dev": "tsc --watch"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "compression": "^1.8.2",
     "express": "^4.21.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/compression": "^1.8.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.5",
     "@types/ws": "^8.5.13",

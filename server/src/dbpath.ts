@@ -16,3 +16,9 @@ const here = dirname(fileURLToPath(import.meta.url));
  * Absolute path to the SQLite database file, one level up from dist.
  */
 export const DB_PATH = join(here, '..', 'btc-liq.db');
+
+/**
+ * Absolute path to the committed liquidation seed (server/data), resolved the
+ * same way so it is found from any working directory.
+ */
+export const SEED_PATH = join(here, '..', 'data', 'liquidations.csv.gz');

@@ -111,6 +111,12 @@ export function App(): JSX.Element {
                     <span className="dot long" /> Long liquidated
                     <span className="dot short" /> Short liquidated
                     <span className="dot anomaly" /> &gt;$1M
+                    <span
+                        className="sample"
+                        title="Binance publishes at most one BTCUSDT liquidation per second: when several happen within a second, only the last one is sent. Live bubbles are a sample of the flow, not every liquidation."
+                    >
+                        ⓘ 1/s sample
+                    </span>
                 </div>
             </header>
 
