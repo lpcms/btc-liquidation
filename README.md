@@ -35,6 +35,7 @@ and time, sized by its value in USDT.
 - [📜 Scripts](#-scripts)
 - [🗂️ Project Structure](#️-project-structure)
 - [🔧 Configuration](#-configuration)
+- [🛡️ Security](#️-security)
 - [☁️ Deployment](#️-deployment)
 - [🚧 Known Limitations](#-known-limitations)
 - [📄 License](#-license)
@@ -403,6 +404,7 @@ From the project root:
 | `npm run import -- <file>` | Import a Telegram `result.json` (see above)                                      |
 | `npm run seed:import`    | Load the history archive into the database                                         |
 | `npm run seed:export`    | Merge the database into the history archive                                        |
+| `npm run audit`          | Check dependencies of `server/` and `web/` for known vulnerabilities               |
 
 Inside `server/`: `npm run dev` — `tsc --watch`.
 Inside `web/`: `npm run dev` — Vite dev server, `npm run preview` — preview the production build.
@@ -481,6 +483,35 @@ There are no environment variables or config files — the few settings are cons
 
 > ⚠️ The stream URL uses Binance's routed `/market/ws` path: `@forceOrder` belongs to the
 > **Market** category, and the legacy unrouted `/ws` URLs no longer deliver it.
+
+---
+
+## 🛡️ Security
+
+- 🔑 **No keys, no secrets.** Only public Binance market data is used — there are no API keys,
+  tokens or passwords anywhere in the project. The history archive holds public market data only.
+- 🏠 **Local by default.** The server listens on `127.0.0.1`; it is reachable from outside only
+  through a reverse proxy you set up on purpose (see [Deployment](#️-deployment)).
+- 📖 **Read-only API.** Only `GET` endpoints; query parameters are validated and clamped, invalid
+  input is answered with `400` instead of an exception.
+- 💉 **No SQL injection surface.** Every query is a prepared statement with bound parameters.
+- 📡 **Push-only WebSocket.** `/ws` only sends liquidations; messages from clients are not processed.
+- 🛑 **Defensive parsing.** Malformed Binance frames, Telegram messages and seed rows are skipped,
+  never crash the collector.
+
+### 📦 Dependency audit
+
+| Package  | Checked    | Result                       |
+| -------- | ---------- | ---------------------------- |
+| `server` | 26.10.2026 | ✅ 0 known vulnerabilities   |
+| `web`    | 26.10.2026 | ✅ 0 known vulnerabilities   |
+
+Advisories in transitive dependencies of Express and Vite were fixed with `npm audit fix` (no
+breaking upgrades). New advisories appear all the time, so re-check before deploying:
+
+```bash
+npm run audit        # npm audit for server/ and web/
+```
 
 ---
 

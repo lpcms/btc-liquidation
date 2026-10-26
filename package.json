@@ -22,6 +22,7 @@
     "backfill": "npm run backfill --prefix ./server",
     "import": "npm run import --prefix ./server",
     "seed:export": "npm run seed:export --prefix ./server",
-    "seed:import": "npm run seed:import --prefix ./server"
+    "seed:import": "npm run seed:import --prefix ./server",
+    "audit": "npm audit --prefix ./server && npm audit --prefix ./web"
   }
 }
